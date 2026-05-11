@@ -1,0 +1,412 @@
+---
+title: "Hate Crimes and Socioeconomic Factors in U.S. States"
+subtitle: "A Statistical Analysis Using FBI and Census Data"
+author: "Chingiz Rabdanov"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 5, fig.align = "center")
+```
+
+# Abstract
+
+This project investigates whether socioeconomic conditions in U.S. states are
+associated with the rate of FBI-reported hate crimes per 100,000 residents.
+Using a publicly available dataset compiled by FiveThirtyEight from the
+American Community Survey (Census), the Kaiser Family Foundation, and the
+FBI Uniform Crime Reporting program, we model the average annual hate-crime
+rate in 2010–2015 as a function of two state-level predictors: median household
+income and the Gini index of income inequality. A multiple linear regression
+on the 50 states with complete data shows that both income (β = 7.42 × 10⁻⁵,
+p = 0.002) and the Gini index (β = 39.36, p < 0.001) are positively and
+significantly associated with the FBI hate-crime rate, jointly explaining
+about 33% of the variation across states (R² = 0.33, F(2, 47) = 11.38,
+p < 0.001). However, the relationship is highly sensitive to the District of
+Columbia, an extreme outlier on both the dependent variable and inequality;
+removing it reduces R² to 0.08 and renders the coefficients non-significant.
+We therefore conclude that the headline correlation should be interpreted with
+caution: state-level wealth and inequality are associated with reported hate
+crimes, but reporting practices, population scale, and the influence of single
+high-leverage jurisdictions complicate any causal interpretation. The analysis
+illustrates how a single observation can dominate a small ecological dataset
+and underscores the need for individual-level or longitudinal designs to
+draw stronger inferences about the drivers of hate crime.
+
+*(Word count: ~245)*
+
+---
+
+# Overview
+
+## Context on the data collection
+
+The dataset was assembled by FiveThirtyEight for the article *"Higher Rates of
+Hate Crimes Are Tied to Income Inequality"* (Majumder, 2017). It combines:
+
+- **American Community Survey (ACS, 2015)** — Census Bureau data on income,
+  unemployment, education, and demographics.
+- **Kaiser Family Foundation** — share of voters who voted for Donald Trump in
+  the 2016 presidential election.
+- **FBI Uniform Crime Reporting (UCR), 2010–2015** — average annual hate-crime
+  rate per 100,000 residents.
+- **Southern Poverty Law Center (SPLC), Nov 9 – Dec 18, 2016** — short-term
+  count of hate incidents post-election.
+
+Each row is a U.S. state (50 states + the District of Columbia, 51 rows total).
+
+## Variables
+
+**Dependent variable (DV) — quantitative**
+
+- `avg_hatecrimes_per_100k_fbi`: Average annual hate-crime incidents per
+  100,000 residents reported to the FBI between 2010 and 2015.
+
+**Independent variables (IVs) — both quantitative**
+
+1. `median_household_income`: Median household income in 2015 USD (ACS).
+2. `gini_index`: 2015 Gini index of income inequality (0 = perfect equality,
+   1 = one person earns everything).
+
+We chose these two predictors because they capture two conceptually distinct
+features of a state's economy: *level* of prosperity (income) and *distribution*
+of prosperity (inequality). It is plausible that both shape inter-group tension
+in different ways.
+
+## Research question
+
+> **To what extent do a state's median household income and its level of
+> income inequality (Gini index) jointly predict the average annual rate of
+> hate crimes per 100,000 residents reported to the FBI?**
+
+## Type of study
+
+This is an **observational, cross-sectional** ecological study. No variables
+were manipulated; states are the units of analysis. Causal claims are not
+warranted — we can only describe associations.
+
+## Data source
+
+Self-collected from a public mirror of FiveThirtyEight's
+`hate_crimes.csv`:
+`https://raw.githubusercontent.com/Chingiz1492/Hate-Crimes-US/refs/heads/main/hate_crimes.csv`
+
+Original source article: Majumder, M. (2017). *Higher Rates of Hate Crimes
+Are Tied to Income Inequality.* FiveThirtyEight.
+
+---
+
+# 1. Data preparation
+
+```{r packages}
+# Load packages (install once with install.packages() if needed)
+library(tidyverse)   # dplyr, ggplot2, readr, etc.
+library(broom)       # tidy() for model output
+library(knitr)       # kable() for nice tables
+library(GGally)      # ggpairs() for correlation matrix plot
+```
+
+```{r load-data}
+url <- "https://raw.githubusercontent.com/Chingiz1492/Hate-Crimes-US/refs/heads/main/hate_crimes.csv"
+hatecrime_raw <- read.csv(url)
+
+# Quick look
+glimpse(hatecrime_raw)
+```
+
+The raw data has **51 rows × 12 columns**. We keep only the variables relevant
+to our research question and drop rows with missing values on those columns
+(Hawaii has no FBI hate-crime figure).
+
+```{r clean}
+hate <- hatecrime_raw %>%
+  select(state,
+         hate_crimes = avg_hatecrimes_per_100k_fbi,
+         income      = median_household_income,
+         gini        = gini_index) %>%
+  drop_na()
+
+cat("Rows after dropping NA:", nrow(hate), "\n")
+```
+
+After cleaning we have **50 observations** (50 states + DC, minus Hawaii).
+
+## Cases
+
+Each case is one U.S. state (or DC). The unit of analysis is the *state*, not
+the individual — this is what makes the design ecological.
+
+---
+
+# 2. Summary statistics
+
+```{r summary-stats}
+hate %>%
+  select(hate_crimes, income, gini) %>%
+  summary()
+```
+
+A more compact, presentation-ready table:
+
+```{r summary-table}
+hate %>%
+  select(hate_crimes, income, gini) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Value") %>%
+  group_by(Variable) %>%
+  summarise(N      = n(),
+            Mean   = mean(Value),
+            SD     = sd(Value),
+            Min    = min(Value),
+            Median = median(Value),
+            Max    = max(Value)) %>%
+  kable(digits = 3, caption = "Summary statistics for the three core variables")
+```
+
+**Reading the table.** Across the 50 states, the average FBI hate-crime rate
+is ≈ 2.37 per 100,000 (SD ≈ 1.71), but the spread is wide — from 0.27 (Wyoming)
+to 10.95 (DC). Median income ranges from ≈ \$35.5K (Mississippi) to ≈ \$76K
+(Maryland), and Gini ranges from 0.42 (Utah) to 0.53 (DC).
+
+---
+
+# 3. Visualizations
+
+## 3.1 Distribution of the dependent variable
+
+```{r dv-hist}
+ggplot(hate, aes(x = hate_crimes)) +
+  geom_histogram(bins = 15, fill = "steelblue", color = "white") +
+  geom_vline(aes(xintercept = mean(hate_crimes)), linetype = "dashed") +
+  labs(title = "Distribution of FBI hate-crime rate (per 100,000)",
+       x = "Avg. hate crimes per 100k (2010–2015)",
+       y = "Number of states") +
+  theme_minimal()
+```
+
+The DV is right-skewed and has one striking observation on the far right
+(DC, ≈ 11). This will matter later.
+
+## 3.2 Scatter plot — income vs. hate crimes
+
+```{r scatter-income}
+ggplot(hate, aes(x = income, y = hate_crimes)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred") +
+  geom_text(data = hate %>% filter(state == "District of Columbia"),
+            aes(label = state), hjust = 1.1, color = "darkred") +
+  labs(title = "Hate-crime rate vs. median household income",
+       x = "Median household income (USD)",
+       y = "FBI hate crimes per 100k") +
+  theme_minimal()
+```
+
+There is a positive but modest trend; DC is clearly the upper-right outlier.
+
+## 3.3 Scatter plot — Gini vs. hate crimes
+
+```{r scatter-gini}
+ggplot(hate, aes(x = gini, y = hate_crimes)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, color = "darkgreen") +
+  geom_text(data = hate %>% filter(state == "District of Columbia"),
+            aes(label = state), hjust = 1.1, color = "darkgreen") +
+  labs(title = "Hate-crime rate vs. Gini index of inequality",
+       x = "Gini index (higher = more unequal)",
+       y = "FBI hate crimes per 100k") +
+  theme_minimal()
+```
+
+Inequality shows a more visible positive association — but again DC drives it.
+
+## 3.4 Correlation matrix
+
+```{r corr-pairs, fig.height=5.5}
+ggpairs(hate %>% select(hate_crimes, income, gini),
+        title = "Pairwise relationships among the three variables")
+```
+
+---
+
+# 4. Statistical analysis
+
+## 4.1 Method
+
+Both predictors and the outcome are quantitative, so we use **multiple linear
+regression** (OLS). This lets us estimate the partial effect of each predictor
+while controlling for the other.
+
+## 4.2 Hypotheses
+
+For each slope coefficient we test:
+
+- **H₀:** βⱼ = 0  (the predictor has no linear association with the hate-crime
+  rate after controlling for the other predictor)
+- **Hₐ:** βⱼ ≠ 0  (there is a linear association)
+
+For the overall model:
+
+- **H₀:** β_income = β_gini = 0
+- **Hₐ:** at least one slope is non-zero (overall F-test)
+
+We use a significance level of α = 0.05 throughout.
+
+## 4.3 Pearson correlations
+
+```{r correlations}
+cor_income <- cor.test(hate$income, hate$hate_crimes)
+cor_gini   <- cor.test(hate$gini,   hate$hate_crimes)
+
+tibble(Predictor = c("Median income", "Gini index"),
+       r         = c(cor_income$estimate, cor_gini$estimate),
+       `95% CI`  = c(sprintf("[%.3f, %.3f]",
+                             cor_income$conf.int[1], cor_income$conf.int[2]),
+                     sprintf("[%.3f, %.3f]",
+                             cor_gini$conf.int[1],   cor_gini$conf.int[2])),
+       `p-value` = c(cor_income$p.value, cor_gini$p.value)) %>%
+  kable(digits = 4, caption = "Pearson correlations with FBI hate-crime rate")
+```
+
+## 4.4 Multiple regression model
+
+```{r model}
+model <- lm(hate_crimes ~ income + gini, data = hate)
+summary(model)
+```
+
+A tidy version for reporting:
+
+```{r model-tidy}
+tidy(model, conf.int = TRUE) %>%
+  kable(digits = 5,
+        caption = "Coefficient estimates with 95% confidence intervals")
+
+glance(model) %>%
+  select(r.squared, adj.r.squared, statistic, p.value, df, df.residual, nobs) %>%
+  kable(digits = 4, caption = "Model fit statistics")
+```
+
+### Interpretation
+
+- **Intercept (β₀ ≈ −19.59).** Not directly meaningful — it is the predicted
+  hate-crime rate when *both* income and Gini are zero, which is outside the
+  data range.
+- **Income (β ≈ 7.42 × 10⁻⁵, p = 0.002).** Holding inequality constant, every
+  additional \$10,000 of median household income is associated with about
+  **+0.74** additional hate crimes per 100,000 residents. Counter-intuitive
+  on its own — wealthier states report *more* incidents — but plausibly
+  reflects better reporting infrastructure rather than more bias.
+- **Gini index (β ≈ 39.36, p < 0.001).** Holding income constant, a 0.01
+  increase in the Gini index is associated with about **+0.39** additional
+  hate crimes per 100,000.
+- **Overall F-test:** F(2, 47) = 11.38, p ≈ 9 × 10⁻⁵ — we reject the joint
+  null; the model explains a non-trivial share of variation.
+- **R² = 0.326** — the two predictors together account for about **32.6%** of
+  the variance in the FBI hate-crime rate across states.
+  **Adjusted R² = 0.298**, which corrects for the two predictors and gives a
+  fairer estimate (about 30%). Roughly two-thirds of the variation between
+  states is *not* explained by income and inequality alone.
+
+## 4.5 Diagnostics
+
+```{r diagnostics, fig.height=6, fig.width=8}
+par(mfrow = c(2, 2))
+plot(model)
+par(mfrow = c(1, 1))
+```
+
+The residuals-vs-fitted and Q-Q plots reveal one observation with both very
+high leverage and a very large residual: **the District of Columbia**. The
+Cook's distance plot confirms it sits far above the standard threshold.
+
+## 4.6 Sensitivity analysis — refit without DC
+
+```{r model-no-dc}
+model_no_dc <- lm(hate_crimes ~ income + gini,
+                  data = hate %>% filter(state != "District of Columbia"))
+
+tidy(model_no_dc, conf.int = TRUE) %>%
+  kable(digits = 5,
+        caption = "Regression without the District of Columbia")
+
+glance(model_no_dc) %>%
+  select(r.squared, adj.r.squared, statistic, p.value, nobs) %>%
+  kable(digits = 4, caption = "Fit statistics (DC removed)")
+```
+
+**This is the most important diagnostic in the project.** Without DC:
+
+- R² drops from **0.33 → 0.08**.
+- The income coefficient is no longer significant (p ≈ 0.06).
+- The Gini coefficient is no longer significant (p ≈ 0.32).
+
+DC is unique: it is a single city treated as a "state", so it has both an
+extreme Gini and an extreme hate-crime rate. The headline correlation is
+largely driven by this single observation.
+
+---
+
+# 5. Conclusion
+
+## What we found
+
+Across the 50 U.S. states with complete data, both median household income
+and the Gini index are positively associated with FBI-reported hate-crime
+rates, and together they explain about a third of the variation between
+states (R² ≈ 0.33). The overall model is statistically significant
+(F(2, 47) = 11.38, p < 0.001), and each predictor remains significant in the
+presence of the other — suggesting that *level* of income and *distribution*
+of income capture different aspects of state-level conditions.
+
+## Why this matters
+
+Hate crimes have severe psychological, social, and political consequences. If
+states with greater economic inequality report systematically more hate
+crimes, that is relevant evidence for policymakers, civil-rights
+organizations, and journalists, and it aligns with social-strain theories
+in sociology. Even the *reporting* angle is policy-relevant: if richer states
+just record more incidents, then poorer states' figures may understate the
+true problem.
+
+## Limitations
+
+1. **Outlier dominance.** The District of Columbia drives most of the
+   relationship. With DC removed, neither predictor is significant. Findings
+   should be interpreted as descriptive of *this particular sample including
+   DC*, not as a robust population-level effect.
+2. **Ecological fallacy.** State-level associations do not necessarily hold at
+   the individual level. We cannot claim that wealthier or more unequal
+   *people* commit more hate crimes.
+3. **Reporting bias.** FBI hate-crime statistics depend on whether local law
+   enforcement participates in the UCR program and how they classify incidents.
+   Apparent state-to-state differences may partly reflect reporting practices
+   rather than actual incidence.
+4. **Cross-sectional design.** With one cross-section we cannot assess whether
+   changes in inequality lead to changes in hate crime; reverse causality and
+   confounders (urbanization, demographic composition, political climate) are
+   unaddressed here.
+5. **Small N (50).** State-level regressions have limited statistical power
+   and are sensitive to single observations, as we saw with DC.
+
+## Suggested next steps
+
+- Use longitudinal panel data (state × year) and fixed effects.
+- Add control variables (urbanization, racial composition, share of college
+  graduates, hate-crime law strength).
+- Replicate with a different DV (e.g., SPLC counts, ADL data) for triangulation.
+- Consider robust regression or a log-transformed DV to mitigate the influence
+  of DC and other high-leverage points.
+
+---
+
+# Session info
+
+```{r session}
+sessionInfo()
+```
